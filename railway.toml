@@ -8,3 +8,6 @@ healthcheckPath = "/api/healthz"
 healthcheckTimeout = 60
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 10
+
+[nixpacks]
+providers = ["nodejs", "pnpm"]

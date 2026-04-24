@@ -1,0 +1,5 @@
+[providers]
+
+[providers.nix]
+packages = ["ffmpeg-full", "nodejs_18", "pnpm"]
+
