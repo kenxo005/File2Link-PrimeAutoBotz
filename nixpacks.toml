@@ -1,4 +1,0 @@
-[providers.nix]
-packages = ["ffmpeg-full"]
-
-
