@@ -58,3 +58,4 @@ logs/
 
 # Telegram gramjs session (contains auth credentials)
 telegram_session.txt
+package-lock.json
