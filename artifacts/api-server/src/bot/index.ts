@@ -8,6 +8,7 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN!;
 const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID!;
 const REQUIRED_CHANNEL_ID = -1003792781847;
 const CHANNEL_USERNAME = "PrimeAutoBotz";
+const BOT_USERNAME = "filetolink_05bot";
 
 export const bot = new Telegraf(BOT_TOKEN);
 
@@ -40,9 +41,9 @@ async function sendForceJoinMessage(ctx: any) {
   ]);
 
   await ctx.replyWithHTML(
-    `🔒 <b>Join Required</b>\n\n` +
-    `You must join our channel to use this bot.\n\n` +
-    `👇 Click the button below to join our community and get started! 🌐`,
+    `🔒 <b>Join Channel</b>\n\n` +
+    `You must join <b>${CHANNEL_USERNAME}</b> to use this bot.\n\n` +
+    `👇 Click the button below to join ${CHANNEL_USERNAME} community and get started! 🌐`,
     joinButton,
   );
 }
@@ -89,8 +90,17 @@ bot.action("check_join", async (ctx) => {
       logger.warn({ err }, "Could not delete force join message");
     }
     
-    // Show success alert
+    // Show success alert and welcome message
     await ctx.answerCbQuery("✅ Welcome! You can now use the bot 🎉", { show_alert: true });
+    await ctx.reply(
+      `🎉 <b>Welcome to ${BOT_USERNAME}!</b>\n\n` +
+      `You have successfully joined and can now use all bot features.\n\n` +
+      `📤 Forward any file to me and I'll generate:\n` +
+      `⬇️ A direct <b>download link</b>\n` +
+      `▶️ A <b>stream link</b> for videos and audio\n\n` +
+      `📤 <i>Just forward or send any file to get started!</i>`,
+      { parse_mode: "HTML" }
+    );
   } else {
     // Still not a member
     await ctx.answerCbQuery(
