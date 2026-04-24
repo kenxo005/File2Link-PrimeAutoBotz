@@ -6,6 +6,8 @@ import { logger } from "../lib/logger.js";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN!;
 const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID!;
+const REQUIRED_CHANNEL_ID = -1003792781847;
+const CHANNEL_USERNAME = "PrimeAutoBotz";
 
 export const bot = new Telegraf(BOT_TOKEN);
 
@@ -13,6 +15,90 @@ function getBaseUrl(): string {
   if (process.env.BASE_URL) return process.env.BASE_URL;
   return `http://localhost:${process.env.PORT || 8080}`;
 }
+
+/**
+ * Check if user is a member of the required channel
+ */
+async function isUserChannelMember(userId: number): Promise<boolean> {
+  try {
+    const member = await bot.telegram.getChatMember(REQUIRED_CHANNEL_ID, userId);
+    // Check if user is member, administrator, creator, or restricted (but still in channel)
+    return ["member", "administrator", "creator", "restricted"].includes(member.status);
+  } catch (err: any) {
+    logger.error({ err: err?.message || err, userId }, "Error checking channel membership");
+    return false;
+  }
+}
+
+/**
+ * Send force join message with buttons
+ */
+async function sendForceJoinMessage(ctx: any) {
+  const joinButton = Markup.inlineKeyboard([
+    [Markup.button.url("🚀 Join Channel", `https://t.me/${CHANNEL_USERNAME}`)],
+    [Markup.button.callback("✅ Check Join", "check_join")],
+  ]);
+
+  await ctx.replyWithHTML(
+    `🔒 <b>Join Required</b>\n\n` +
+    `You must join our channel to use this bot.\n\n` +
+    `👇 Click the button below to join our community and get started! 🌐`,
+    joinButton,
+  );
+}
+
+/**
+ * Middleware to check channel membership for private messages
+ */
+bot.use(async (ctx, next) => {
+  // Only check for private messages
+  if (ctx.chat?.type !== "private") return next();
+
+  const userId = ctx.from?.id;
+  if (!userId) return next();
+
+  // Check if user is member of required channel
+  const isMember = await isUserChannelMember(userId);
+  if (!isMember) {
+    // Send force join message and don't proceed
+    await sendForceJoinMessage(ctx);
+    return;
+  }
+
+  // User is member, proceed
+  return next();
+});
+
+/**
+ * Handle "Check Join" button callback
+ */
+bot.action("check_join", async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) {
+    await ctx.answerCbQuery("❌ Error: Could not identify user", { show_alert: true });
+    return;
+  }
+
+  const isMember = await isUserChannelMember(userId);
+  
+  if (isMember) {
+    // Delete the force join message
+    try {
+      await ctx.deleteMessage();
+    } catch (err) {
+      logger.warn({ err }, "Could not delete force join message");
+    }
+    
+    // Show success alert
+    await ctx.answerCbQuery("✅ Welcome! You can now use the bot 🎉", { show_alert: true });
+  } else {
+    // Still not a member
+    await ctx.answerCbQuery(
+      "❌ You haven't joined the channel yet. Please join first by clicking the button above.",
+      { show_alert: true }
+    );
+  }
+});
 
 /**
  * Forward the file to the log channel and send a details message.
