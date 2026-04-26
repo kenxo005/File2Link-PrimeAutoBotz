@@ -30,10 +30,19 @@ async function streamDirect(
   fileSize: number,
 ): Promise<void> {
   let aborted = false;
+  let bytesWritten = 0;
+  const startTime = Date.now();
   
   const onAbort = () => { 
     aborted = true;
-    logger.info({ chatId, messageId }, "streamDirect: client disconnected/aborted");
+    logger.info({ 
+      chatId, 
+      messageId,
+      bytesWritten,
+      mimeType,
+      duration: Date.now() - startTime,
+      rangeRequested: !!req.headers["range"]
+    }, "streamDirect: client disconnected/aborted");
   };
   
   req.on("close", onAbort);
@@ -47,6 +56,7 @@ async function streamDirect(
 
     const writeBP = async (chunk: Buffer): Promise<boolean> => {
       if (aborted) return false;
+      bytesWritten += chunk.length;
       const ok = res.write(chunk);
       if (!ok) {
         await new Promise<void>((resolve) => {
@@ -74,6 +84,15 @@ async function streamDirect(
       res.setHeader("Content-Length", String(chunkSize));
       res.setHeader("Content-Type", contentType);
 
+      logger.debug({ 
+        chatId, 
+        messageId,
+        mimeType,
+        rangeStart: start,
+        rangeEnd: end,
+        chunkSize
+      }, "streamDirect: 206 range request");
+
       await streamFileByMessage(chatId, messageId, writeBP, start, chunkSize);
 
       if (!aborted) res.end();
@@ -83,12 +102,26 @@ async function streamDirect(
       res.setHeader("Content-Type", contentType);
       res.setHeader("Content-Length", String(fileSize));
 
+      logger.debug({ 
+        chatId, 
+        messageId,
+        mimeType,
+        fileSize
+      }, "streamDirect: full file stream (200)");
+
       await streamFileByMessage(chatId, messageId, writeBP);
 
       if (!aborted) res.end();
     }
   } catch (err) {
-    logger.error({ err }, "streamDirect error");
+    logger.error({ 
+      err, 
+      chatId,
+      messageId,
+      bytesWritten,
+      mimeType,
+      duration: Date.now() - startTime
+    }, "streamDirect error");
     if (!res.headersSent) res.status(500).send("Streaming error");
   } finally {
     req.off("close", onAbort);

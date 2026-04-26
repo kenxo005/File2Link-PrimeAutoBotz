@@ -79,14 +79,34 @@ router.get("/stream-video/:id", async (req, res) => {
     const file = rows[0]!;
     if (isExpired(file.createdAt)) { expiredResponse(res); return; }
     
+    req.log.info({ 
+      fileId: file.id, 
+      fileName: file.fileName,
+      mimeType: file.mimeType,
+      fileType: file.fileType,
+      fileSize: file.fileSize,
+      range: req.headers.range || "no-range"
+    }, "Starting video stream");
+    
     // Log client disconnect for video streaming
     req.on("close", () => {
-      req.log.info({ fileId: file.id, fileName: file.fileName }, "Client disconnected from video stream (status 206)");
+      const bytesSent = res.getHeader('Content-Length');
+      req.log.info({ 
+        fileId: file.id, 
+        fileName: file.fileName,
+        mimeType: file.mimeType,
+        bytesSent,
+        statusCode: res.statusCode
+      }, "Client disconnected from video stream");
     });
     
     await streamVideoFast(req, res, file.id, file.chatId, file.messageId, file.mimeType, file.fileName, file.fileSize);
   } catch (err) {
-    req.log.error({ err }, "Stream-video error");
+    req.log.error({ 
+      err, 
+      fileId: req.params.id,
+      mimeType: req.query.mimeType
+    }, "Stream-video error");
     if (!res.headersSent) res.status(500).send("Server error");
   }
 });
@@ -192,14 +212,16 @@ router.get("/stream-page/:id", async (req, res) => {
     const isAudio = file.isAudio || file.mimeType?.startsWith("audio/") || file.fileType === "audio" || file.fileType === "voice";
     const isImage = file.mimeType?.startsWith("image/") || file.fileType === "photo" || file.fileType === "sticker";
 
-    const videoMime = file.mimeType || "video/mp4";
-    const hlsUrl = `/api/hls/${file.id}/index.m3u8`;
-
     let mediaPlayer = "";
     if (isVideo) {
-      // Always try the FAST direct MTProto range stream first (instant playback,
-      // no transcoding). HLS is a recovery fallback only triggered if the browser
-      // genuinely cannot decode the format.
+      // Detect codecs that need HLS transcoding
+      const needsTranscoding = (mime: string) => {
+        const problematicCodecs = ["vp8", "vp9", "av1", "hevc", "h.265", "opus", "theora", "webm"];
+        return problematicCodecs.some(codec => mime.toLowerCase().includes(codec));
+      };
+      
+      const forceHls = needsTranscoding(videoMime);
+      
       mediaPlayer = `
         <div class="media-container">
           <video id="player" controls playsinline preload="auto" style="width:100%;display:block;border-radius:20px;background:#000;"></video>
@@ -211,35 +233,95 @@ router.get("/stream-page/:id", async (req, res) => {
             var directUrl = ${JSON.stringify(videoStreamUrl)};
             var directType = ${JSON.stringify(videoMime)};
             var hlsUrl = ${JSON.stringify(hlsUrl)};
+            var forceHls = ${forceHls ? 'true' : 'false'};
             var triedHls = false;
+            var playbackStarted = false;
+            var directStreamAborted = false;
+            var timeoutHandle = null;
+
+            function clearFallbackTimeout() {
+              if (timeoutHandle) clearTimeout(timeoutHandle);
+              timeoutHandle = null;
+            }
 
             function loadHls() {
               if (triedHls) return;
               triedHls = true;
+              directStreamAborted = true;
+              clearFallbackTimeout();
+              
+              console.log('[Video] Falling back to HLS transcoding');
+              
               while (video.firstChild) video.removeChild(video.firstChild);
               video.removeAttribute('src');
+              
               if (video.canPlayType('application/vnd.apple.mpegurl')) {
                 video.src = hlsUrl;
                 video.load();
-                video.play().catch(function(){});
+                video.play().catch(function(e){ console.error('[Video] HLS play error:', e); });
                 return;
               }
+              
               if (window.Hls && window.Hls.isSupported()) {
-                var hls = new window.Hls({ enableWorker: true, lowLatencyMode: false, maxBufferLength: 30 });
+                var hls = new window.Hls({ 
+                  enableWorker: true, 
+                  lowLatencyMode: false, 
+                  maxBufferLength: 30,
+                  backBufferLength: 90 
+                });
+                hls.on(window.Hls.Events.ERROR, function(event, data) {
+                  console.error('[Video] HLS error:', data);
+                });
                 hls.loadSource(hlsUrl);
                 hls.attachMedia(video);
-                hls.on(window.Hls.Events.MANIFEST_PARSED, function () { video.play().catch(function(){}); });
+                hls.on(window.Hls.Events.MANIFEST_PARSED, function () { 
+                  video.play().catch(function(e){ console.error('[Video] HLS play failed:', e); }); 
+                });
               }
             }
 
-            // Fast path: native playback via direct MTProto range stream
+            function onPlaybackStarted() {
+              playbackStarted = true;
+              clearFallbackTimeout();
+              console.log('[Video] Direct stream playback started');
+            }
+
+            // If codec detected as problematic, skip direct stream entirely
+            if (forceHls) {
+              console.log('[Video] Codec detected as incompatible, using HLS immediately');
+              loadHls();
+              return;
+            }
+
+            // Fast path: try native playback via direct MTProto range stream
             var src = document.createElement('source');
             src.src = directUrl;
             src.type = directType;
             video.appendChild(src);
-            // If the format is undecodable, browser fires error → switch to HLS
-            video.addEventListener('error', loadHls, { once: true });
-            src.addEventListener('error', loadHls, { once: true });
+            
+            // Listen for playback start
+            video.addEventListener('play', onPlaybackStarted, { once: true });
+            
+            // Fallback if error occurs
+            video.addEventListener('error', function(e) {
+              console.error('[Video] Direct stream error:', e);
+              if (!directStreamAborted) loadHls();
+            }, { once: true });
+            
+            src.addEventListener('error', function(e) {
+              console.error('[Video] Source element error:', e);
+              if (!directStreamAborted) loadHls();
+            }, { once: true });
+            
+            // Timeout fallback: if playback hasn't started after 8 seconds, try HLS
+            // This catches cases where browser accepts the format but then stalls
+            timeoutHandle = setTimeout(function() {
+              if (!playbackStarted && !directStreamAborted) {
+                console.warn('[Video] Direct stream timeout (no playback after 8s), falling back to HLS');
+                loadHls();
+              }
+            }, 8000);
+            
             video.load();
           })();
         </script>`;
