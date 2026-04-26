@@ -30,7 +30,14 @@ async function streamDirect(
   fileSize: number,
 ): Promise<void> {
   let aborted = false;
-  req.on("close", () => { aborted = true; });
+  
+  const onAbort = () => { 
+    aborted = true;
+    logger.info({ chatId, messageId }, "streamDirect: client disconnected/aborted");
+  };
+  
+  req.on("close", onAbort);
+  req.on("error", onAbort);
 
   try {
     const contentType = mimeType || "video/mp4";
@@ -83,5 +90,8 @@ async function streamDirect(
   } catch (err) {
     logger.error({ err }, "streamDirect error");
     if (!res.headersSent) res.status(500).send("Streaming error");
+  } finally {
+    req.off("close", onAbort);
+    req.off("error", onAbort);
   }
 }

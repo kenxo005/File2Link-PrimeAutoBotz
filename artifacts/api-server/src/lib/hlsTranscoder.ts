@@ -8,7 +8,7 @@ import { logger } from "./logger.js";
 const HLS_TMP_ROOT = path.join(os.tmpdir(), "f2l-hls");
 fs.mkdirSync(HLS_TMP_ROOT, { recursive: true });
 
-const SESSION_TTL_MS = 10 * 60 * 1000;       // idle eviction (Railway free-tier RAM friendly)
+const SESSION_TTL_MS = 2 * 60 * 1000;       // 2 min: idle eviction (fast cleanup when user exits)
 const MAX_CONCURRENT_SESSIONS = 2;            // hard cap on simultaneous ffmpeg jobs
 const STARTUP_TIMEOUT_MS = 90_000;
 const SEGMENT_WAIT_MS = 60_000;
@@ -176,8 +176,26 @@ export async function readPlaylist(
   videoId: string,
   chatId: number,
   messageId: number,
+  req?: any,
 ): Promise<string> {
   const s = getOrCreateSession(videoId, chatId, messageId);
+  
+  // Detect client disconnect and immediately clean up
+  if (req) {
+    req.on("close", () => {
+      logger.info({ videoId }, "Client disconnected from HLS playlist");
+      if (s.ffmpeg && !s.done) {
+        try {
+          s.ffmpeg.kill("SIGKILL");
+        } catch {}
+      }
+      try {
+        fs.rmSync(s.dir, { recursive: true, force: true });
+      } catch {}
+      sessions.delete(videoId);
+    });
+  }
+  
   await s.ready;
   return fs.readFileSync(s.playlistPath, "utf-8");
 }
@@ -185,10 +203,21 @@ export async function readPlaylist(
 export async function getSegmentFile(
   videoId: string,
   segName: string,
+  req?: any,
 ): Promise<string | null> {
   const s = sessions.get(videoId);
   if (!s) return null;
   if (!/^seg-\d+\.ts$/.test(segName)) return null;
+  
+  // Detect client disconnect for segment requests
+  if (req) {
+    req.on("close", () => {
+      logger.info({ videoId, segName }, "Client disconnected from HLS segment");
+      // Mark session for cleanup on next interval
+      s.lastAccess = Date.now() - SESSION_TTL_MS;
+    });
+  }
+  
   s.lastAccess = Date.now();
   const p = path.join(s.dir, segName);
 

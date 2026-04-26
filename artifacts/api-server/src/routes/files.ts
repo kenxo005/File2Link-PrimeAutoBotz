@@ -54,6 +54,12 @@ router.get("/stream/:id", async (req, res) => {
     const file = rows[0]!;
     if (isExpired(file.createdAt)) { expiredResponse(res); return; }
     await db.update(filesTable).set({ accessCount: (file.accessCount || 0) + 1 }).where(eq(filesTable.id, file.id));
+    
+    // Log client disconnect for audio/file streaming (e.g., user closes page)
+    req.on("close", () => {
+      req.log.info({ fileId: file.id, fileName: file.fileName }, "Client disconnected from stream");
+    });
+    
     await streamTelegramFile(req, res, file.chatId, file.messageId, file.mimeType, file.fileName, file.fileSize, false);
   } catch (err) {
     req.log.error({ err }, "Stream error");
@@ -72,6 +78,12 @@ router.get("/stream-video/:id", async (req, res) => {
     }
     const file = rows[0]!;
     if (isExpired(file.createdAt)) { expiredResponse(res); return; }
+    
+    // Log client disconnect for video streaming
+    req.on("close", () => {
+      req.log.info({ fileId: file.id, fileName: file.fileName }, "Client disconnected from video stream (status 206)");
+    });
+    
     await streamVideoFast(req, res, file.id, file.chatId, file.messageId, file.mimeType, file.fileName, file.fileSize);
   } catch (err) {
     req.log.error({ err }, "Stream-video error");
@@ -89,7 +101,7 @@ router.get("/hls/:id/index.m3u8", async (req, res) => {
     }
     const file = rows[0]!;
     if (isExpired(file.createdAt)) { expiredResponse(res); return; }
-    const playlist = await readPlaylist(file.id, file.chatId, file.messageId);
+    const playlist = await readPlaylist(file.id, file.chatId, file.messageId, req);
     // Rewrite segment refs so they're served through this server
     const rewritten = playlist.replace(
       /^(seg-\d+\.ts)$/gm,
@@ -106,7 +118,7 @@ router.get("/hls/:id/index.m3u8", async (req, res) => {
 
 router.get("/hls/:id/:seg", async (req, res) => {
   try {
-    const segPath = await getSegmentFile(req.params.id!, req.params.seg!);
+    const segPath = await getSegmentFile(req.params.id!, req.params.seg!, req);
     if (!segPath || !fs.existsSync(segPath)) {
       res.status(404).send("Segment not ready");
       return;
