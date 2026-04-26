@@ -11,6 +11,16 @@ import { formatFileSize, getFileTypeLabel } from "../lib/fileUtils.js";
 
 const router = Router();
 
+// HTML escape helper
+function escHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 // 24-hour link expiration. Returns true if the file's link has expired.
 const LINK_TTL_MS = 24 * 60 * 60 * 1000;
 function isExpired(createdAt: Date | null | undefined): boolean {
@@ -215,18 +225,18 @@ router.get("/stream-page/:id", async (req, res) => {
     let mediaPlayer = "";
     if (isVideo) {
       // Detect codecs that need HLS transcoding
-      const needsTranscoding = (mime: string) => {
+      const needsTranscodingCheck = (mime: string) => {
         const problematicCodecs = ["vp8", "vp9", "av1", "hevc", "h.265", "opus", "theora", "webm"];
         return problematicCodecs.some(codec => mime.toLowerCase().includes(codec));
       };
       
-      const forceHls = needsTranscoding(videoMime);
+      const forceHls = needsTranscodingCheck(videoMime);
       
       mediaPlayer = `
         <div class="media-container">
           <video id="player" controls playsinline preload="auto" style="width:100%;display:block;border-radius:20px;background:#000;"></video>
         </div>
-        <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"><\/script>
         <script>
           (function () {
             var video = document.getElementById('player');
@@ -324,7 +334,7 @@ router.get("/stream-page/:id", async (req, res) => {
             
             video.load();
           })();
-        </script>`;
+        <\/script>`;
     } else if (isAudio) {
       const unsupportedAudio = ["audio/ac3", "audio/eac3", "audio/x-ac3", "audio/truehd", "audio/dts", "audio/x-dts"];
       const canPlayInBrowser = !unsupportedAudio.includes(file.mimeType || "");
