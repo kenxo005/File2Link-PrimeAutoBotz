@@ -181,56 +181,66 @@ router.get("/stream-page/:id", async (req, res) => {
     const downloadUrl = `/api/download/${file.id}`;
     const fileLabel = file.fileName || "Untitled File";
 
-    const broadcasts = await db
-      .select()
-      .from(broadcastsTable)
-      .orderBy(desc(broadcastsTable.createdAt))
-      .limit(20);
-    broadcasts.reverse();
-    const _baseUrl = (() => {
-      if (process.env.BASE_URL) return process.env.BASE_URL;
-      return `http://localhost:${process.env.PORT || 8080}`;
-    })();
-    const noticesInitial = JSON.stringify(broadcasts.map(b => {
-      const isFileType = b.fileType === "video" || b.fileType === "animation" || b.fileType === "video_note";
-      const isAudioType = b.fileType === "audio" || b.fileType === "voice";
-      const isImageType = b.fileType === "photo";
-      const canStream = isFileType || isAudioType ||
-        (b.mimeType ? (b.mimeType.startsWith("video/") || b.mimeType.startsWith("audio/")) : false);
-      return {
-        id: b.id,
-        type: b.type,
-        content: b.content,
-        fileId: b.fileId,
-        fileName: b.fileName,
-        mimeType: b.mimeType,
-        fileType: b.fileType,
-        canStream,
-        isVideo: isFileType || (b.mimeType ? b.mimeType.startsWith("video/") : false),
-        isAudio: isAudioType || (b.mimeType ? b.mimeType.startsWith("audio/") : false),
-        isImage: isImageType || (b.mimeType ? b.mimeType.startsWith("image/") : false),
-        streamUrl: b.fileId ? `${_baseUrl}/api/stream-page/${b.fileId}` : null,
-        downloadUrl: b.fileId ? `${_baseUrl}/api/download/${b.fileId}` : null,
-        rawStreamUrl: b.fileId ? `${_baseUrl}/api/stream/${b.fileId}` : null,
-        videoStreamUrl: b.fileId ? `${_baseUrl}/api/stream-video/${b.fileId}` : null,
-        createdAt: b.createdAt instanceof Date ? b.createdAt.toISOString() : String(b.createdAt),
-      };
-    }));
-    const typeLabel = getFileTypeLabel(file.fileType, file.mimeType);
-    const sizeLabel = formatFileSize(file.fileSize);
-    const isVideo = file.mimeType?.startsWith("video/") || file.fileType === "video" || file.fileType === "animation" || file.fileType === "video_note";
-    const isAudio = file.isAudio || file.mimeType?.startsWith("audio/") || file.fileType === "audio" || file.fileType === "voice";
-    const isImage = file.mimeType?.startsWith("image/") || file.fileType === "photo" || file.fileType === "sticker";
+    try {
+      const broadcasts = await db
+        .select()
+        .from(broadcastsTable)
+        .orderBy(desc(broadcastsTable.createdAt))
+        .limit(20);
+      broadcasts.reverse();
+      const _baseUrl = (() => {
+        if (process.env.BASE_URL) return process.env.BASE_URL;
+        return `http://localhost:${process.env.PORT || 8080}`;
+      })();
+      const noticesInitial = JSON.stringify(broadcasts.map(b => {
+        const isFileType = b.fileType === "video" || b.fileType === "animation" || b.fileType === "video_note";
+        const isAudioType = b.fileType === "audio" || b.fileType === "voice";
+        const isImageType = b.fileType === "photo";
+        const canStream = isFileType || isAudioType ||
+          (b.mimeType ? (b.mimeType.startsWith("video/") || b.mimeType.startsWith("audio/")) : false);
+        try {
+          return {
+            id: b.id,
+            type: b.type,
+            content: b.content,
+            fileId: b.fileId,
+            fileName: b.fileName,
+            mimeType: b.mimeType,
+            fileType: b.fileType,
+            canStream,
+            isVideo: isFileType || (b.mimeType ? b.mimeType.startsWith("video/") : false),
+            isAudio: isAudioType || (b.mimeType ? b.mimeType.startsWith("audio/") : false),
+            isImage: isImageType || (b.mimeType ? b.mimeType.startsWith("image/") : false),
+            streamUrl: b.fileId ? `${_baseUrl}/api/stream-page/${b.fileId}` : null,
+            downloadUrl: b.fileId ? `${_baseUrl}/api/download/${b.fileId}` : null,
+            rawStreamUrl: b.fileId ? `${_baseUrl}/api/stream/${b.fileId}` : null,
+            videoStreamUrl: b.fileId ? `${_baseUrl}/api/stream-video/${b.fileId}` : null,
+            createdAt: b.createdAt instanceof Date ? b.createdAt.toISOString() : String(b.createdAt),
+          };
+        } catch (e) {
+          req.log.warn({ err: e, broadcastId: b.id }, "Error mapping broadcast");
+          return null;
+        }
+      }).filter(b => b !== null));
 
-    let mediaPlayer = "";
-    if (isVideo) {
-      // Detect codecs that need HLS transcoding
-      const needsTranscodingCheck = (mime: string) => {
-        const problematicCodecs = ["vp8", "vp9", "av1", "hevc", "h.265", "opus", "theora", "webm"];
-        return problematicCodecs.some(codec => mime.toLowerCase().includes(codec));
-      };
-      
-      const forceHls = needsTranscodingCheck(videoMime);
+      const typeLabel = getFileTypeLabel(file.fileType, file.mimeType);
+      const sizeLabel = formatFileSize(file.fileSize);
+      const isVideo = file.mimeType?.startsWith("video/") || file.fileType === "video" || file.fileType === "animation" || file.fileType === "video_note";
+      const isAudio = file.isAudio || file.mimeType?.startsWith("audio/") || file.fileType === "audio" || file.fileType === "voice";
+      const isImage = file.mimeType?.startsWith("image/") || file.fileType === "photo" || file.fileType === "sticker";
+
+      const videoMime = file.mimeType || "video/mp4";
+      const hlsUrl = `/api/stream-video/${file.id}`;
+
+      let mediaPlayer = "";
+      if (isVideo) {
+        // Detect codecs that need HLS transcoding
+        const needsTranscodingCheck = (mime: string) => {
+          const problematicCodecs = ["vp8", "vp9", "av1", "hevc", "h.265", "opus", "theora", "webm"];
+          return problematicCodecs.some(codec => mime.toLowerCase().includes(codec));
+        };
+        
+        const forceHls = needsTranscodingCheck(videoMime);
       
       mediaPlayer = `
         <div class="media-container">
@@ -709,8 +719,12 @@ router.get("/stream-page/:id", async (req, res) => {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store");
     res.send(html);
+    } catch (innerErr) {
+      req.log.error({ innerErr, fileId: req.params.id, stack: (innerErr as any)?.stack }, "Stream page inner error");
+      if (!res.headersSent) res.status(500).send("Server error building page");
+    }
   } catch (err) {
-    req.log.error({ err }, "Stream page error");
+    req.log.error({ err, fileId: req.params.id, stack: (err as any)?.stack }, "Stream page error");
     if (!res.headersSent) res.status(500).send("Server error");
   }
 });
