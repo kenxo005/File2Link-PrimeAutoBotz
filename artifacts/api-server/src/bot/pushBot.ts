@@ -7,7 +7,7 @@ import { logger } from "../lib/logger.js";
 import { broadcastSse } from "../lib/sseClients.js";
 
 const PUSH_BOT_TOKEN = process.env.PUSH_BOT_TOKEN;
-const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID!;
+const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID; // Optional
 
 export const pushBot = PUSH_BOT_TOKEN ? new Telegraf(PUSH_BOT_TOKEN) : null;
 
@@ -23,16 +23,24 @@ async function forwardToLogChannel(
   fromChatId: number,
   fromMessageId: number,
 ): Promise<{ logChatId: number; logMessageId: number } | null> {
-  if (!LOG_CHANNEL_ID || !pushBot) return null;
+  if (!LOG_CHANNEL_ID) {
+    logger.debug("Log channel not configured (LOG_CHANNEL_ID not set) — file will be stored from bot DM");
+    // Return a pseudo result so files aren't rejected, but point to original DM
+    return null;
+  }
+  
+  if (!pushBot) return null;
+  
   try {
     const forwarded = await pushBot.telegram.forwardMessage(
       LOG_CHANNEL_ID,
       fromChatId,
       fromMessageId,
     );
+    logger.debug({ logChatId: forwarded.chat.id, logMessageId: forwarded.message_id }, "Push bot: forwarded to log channel");
     return { logChatId: forwarded.chat.id, logMessageId: forwarded.message_id };
   } catch (err: any) {
-    logger.error({ err: err?.message }, "Push bot: failed to forward to log channel");
+    logger.error({ err: err?.message, fromChatId, messageId: fromMessageId }, "Push bot: failed to forward to log channel");
     return null;
   }
 }
@@ -66,9 +74,14 @@ if (pushBot) {
   });
 
   pushBot.start(async (ctx) => {
+    const logChannelStatus = LOG_CHANNEL_ID 
+      ? "✅ Log channel configured"
+      : "⚠️ No log channel configured (LOG_CHANNEL_ID env not set) — file streaming may be limited";
+    
     await ctx.reply(
       "✅ Push bot ready.\n\n" +
-      "Send me any text or file to broadcast it to every stream page.\n\n" +
+      "Send me any text or file to broadcast it to every stream page.\n" +
+      `${logChannelStatus}\n\n` +
       "Commands:\n" +
       "/clear — choose which messages to remove\n" +
       "/cancel — cancel current operation",
@@ -279,7 +292,7 @@ if (pushBot) {
 
     const chatId = ctx.chat.id;
     const messageId = msg.message_id;
-    const streamable = isStreamable(mimeType);
+    const streamable = isStreamable(mimeType) || (fileType === "photo"); // Images are streamable
     const audioFile = isAudio(mimeType);
 
     try {
@@ -311,21 +324,24 @@ if (pushBot) {
 
       const logResult = await forwardToLogChannel(chatId, messageId);
       if (logResult) {
+        // Update file to point to log channel for streaming
         await db.update(filesTable)
           .set({ chatId: logResult.logChatId, messageId: logResult.logMessageId })
           .where(eq(filesTable.id, recordId));
-      } else {
-        // Forwarding failed — the file row points at the user↔bot DM, which the
-        // streaming MTProto session cannot read. Refuse the push so the user
-        // knows to add the push bot to the log channel.
-        await db.delete(filesTable).where(eq(filesTable.id, recordId));
+        logger.info({ fileId: recordId, fileType, fileName }, "Push bot: file stored in log channel");
+      } else if (LOG_CHANNEL_ID) {
+        // Log channel configured but forwarding failed — still allow the push
+        // but warn the user that streaming may not work
+        logger.warn({ fileId: recordId, LOG_CHANNEL_ID }, "Push bot: forwarding to log channel failed, file stored from bot DM");
         await ctx.reply(
-          "❌ Push bot can't forward this file to the log channel.\n\n" +
-          "Fix: open your log channel → Administrators → Add Admin → " +
-          "search this bot → grant 'Post Messages' permission. " +
-          "Then send the file again."
+          "⚠️ File pushed to site, but couldn't forward to log channel.\n\n" +
+          "⚠️ **Streaming may not work** — Fix: open your log channel → " +
+          "Administrators → Add Admin → search this bot → grant 'Post Messages' permission.\n\n" +
+          "For now, download should still work."
         );
-        return;
+      } else {
+        // No log channel configured — file stored from bot DM
+        logger.info({ fileId: recordId, fileType, fileName }, "Push bot: file stored from bot DM (no log channel configured)");
       }
 
       const baseUrl = getBaseUrl();
