@@ -25,22 +25,36 @@ async function forwardToLogChannel(
 ): Promise<{ logChatId: number; logMessageId: number } | null> {
   if (!LOG_CHANNEL_ID) {
     logger.debug("Log channel not configured (LOG_CHANNEL_ID not set) — file will be stored from bot DM");
-    // Return a pseudo result so files aren't rejected, but point to original DM
     return null;
   }
   
   if (!pushBot) return null;
   
   try {
+    logger.debug({ LOG_CHANNEL_ID, fromChatId, fromMessageId }, "Attempting to forward message to log channel");
+    
     const forwarded = await pushBot.telegram.forwardMessage(
       LOG_CHANNEL_ID,
       fromChatId,
       fromMessageId,
     );
-    logger.debug({ logChatId: forwarded.chat.id, logMessageId: forwarded.message_id }, "Push bot: forwarded to log channel");
+    
+    logger.info({ logChatId: forwarded.chat.id, logMessageId: forwarded.message_id, LOG_CHANNEL_ID }, "✅ Successfully forwarded to log channel");
     return { logChatId: forwarded.chat.id, logMessageId: forwarded.message_id };
   } catch (err: any) {
-    logger.error({ err: err?.message, fromChatId, messageId: fromMessageId }, "Push bot: failed to forward to log channel");
+    const errorCode = err?.error_code || err?.response?.error_code || err?.code || "UNKNOWN";
+    const errorDesc = err?.description || err?.message || String(err);
+    const errorResponse = err?.response ? JSON.stringify(err.response) : "no response";
+    
+    logger.error({ 
+      errorCode, 
+      errorDesc,
+      errorResponse,
+      LOG_CHANNEL_ID, 
+      fromChatId, 
+      messageId: fromMessageId 
+    }, "❌ Push bot failed to forward to log channel");
+    
     return null;
   }
 }
@@ -334,9 +348,12 @@ if (pushBot) {
         // but warn the user that streaming may not work
         logger.warn({ fileId: recordId, LOG_CHANNEL_ID }, "Push bot: forwarding to log channel failed, file stored from bot DM");
         await ctx.reply(
-          "⚠️ File pushed to site, but couldn't forward to log channel.\n\n" +
-          "⚠️ **Streaming may not work** — Fix: open your log channel → " +
-          "Administrators → Add Admin → search this bot → grant 'Post Messages' permission.\n\n" +
+          "⚠️ File pushed to site, but **couldn't forward to log channel**.\n\n" +
+          "**Streaming may not work** — Check these fixes:\n\n" +
+          "1️⃣ Make sure LOG_CHANNEL_ID is set correctly on Railway\n" +
+          "2️⃣ Add bot as Admin in your channel\n" +
+          "3️⃣ Grant 'Post Messages' permission\n" +
+          "4️⃣ Check Railway logs for the specific error\n\n" +
           "For now, download should still work."
         );
       } else {
@@ -389,9 +406,33 @@ export function startPushBot(): void {
   pushBot.telegram.deleteWebhook({ drop_pending_updates: false })
     .catch((err) => logger.warn({ err: err?.message }, "Push bot: deleteWebhook failed (likely no webhook set)"));
 
-  // Identify which bot the user should DM
+  // Identify which bot the user should DM and verify log channel access
   pushBot.telegram.getMe()
-    .then((me) => logger.info({ username: me.username, id: me.id }, "Push bot identity — DM this username to push content"))
+    .then(async (me) => {
+      logger.info({ username: me.username, id: me.id }, "Push bot identity — DM this username to push content");
+      
+      // Test log channel access if configured
+      if (LOG_CHANNEL_ID) {
+        try {
+          const chatInfo = await pushBot!.telegram.getChat(LOG_CHANNEL_ID);
+          logger.info({ 
+            LOG_CHANNEL_ID,
+            chatType: chatInfo.type,
+            chatTitle: (chatInfo as any).title || chatInfo.username || "unknown"
+          }, "✅ Push bot can access log channel");
+        } catch (testErr: any) {
+          const errorCode = testErr?.error_code || testErr?.response?.error_code || "UNKNOWN";
+          const errorDesc = testErr?.description || testErr?.message || String(testErr);
+          logger.error({ 
+            LOG_CHANNEL_ID, 
+            errorCode, 
+            errorDesc 
+          }, "❌ Push bot CANNOT access log channel — check LOG_CHANNEL_ID and bot permissions");
+        }
+      } else {
+        logger.warn("LOG_CHANNEL_ID not configured — file streaming will be limited to downloads only");
+      }
+    })
     .catch((err) => logger.error({ err: err?.message }, "Push bot getMe failed — token invalid?"));
 
   pushBot.launch({ dropPendingUpdates: true })
