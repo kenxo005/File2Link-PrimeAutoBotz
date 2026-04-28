@@ -19,7 +19,7 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-app.listen(port, async (err?: Error) => {
+app.listen(port, (err?: Error) => {
   if (err) {
     logger.error({ err }, "Error listening on port");
     process.exit(1);
@@ -31,11 +31,11 @@ app.listen(port, async (err?: Error) => {
   startPushBot();
   startCleanupJob();
 
-  try {
-    await getGramjsClient();
-  } catch (gramErr) {
+  // Initialize GramJS client in the background (non-blocking)
+  // This ensures health checks respond immediately, while GramJS connects asynchronously
+  getGramjsClient().catch((gramErr) => {
     logger.error({ err: gramErr }, "Failed to initialize MTProto client — stream/download will fail");
-  }
+  });
 });
 
 process.once("SIGINT", () => process.exit(0));
