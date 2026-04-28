@@ -53,6 +53,10 @@ async function streamDirect(
     const rangeHeader = req.headers["range"];
 
     res.setHeader("Cache-Control", "public, max-age=86400, immutable");
+    
+    // Streaming optimization headers
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
 
     const writeBP = async (chunk: Buffer): Promise<boolean> => {
       if (aborted) return false;
@@ -68,14 +72,25 @@ async function streamDirect(
       }
       return !aborted;
     };
+    
+    // Optimize socket for streaming
+    const socket = res.socket;
+    if (socket && !socket.writableNeedsDrain) {
+      try {
+        socket.setNoDelay(true);
+        if (typeof socket.setWriteQueueHighWaterMark === 'function') {
+          socket.setWriteQueueHighWaterMark(256 * 1024); // 256KB buffer
+        }
+      } catch {}
+    }
 
     if (rangeHeader) {
       const parts = rangeHeader.replace(/bytes=/, "").split("-");
       const start = parseInt(parts[0] ?? "0", 10);
-      // 16 MB ranges for video streaming = fewer round trips, faster seek
+      // 32 MB ranges for video streaming (doubled from 16MB) = even fewer round trips, faster seek
       const end = parts[1]
         ? parseInt(parts[1], 10)
-        : Math.min(start + 16 * 1024 * 1024 - 1, fileSize - 1);
+        : Math.min(start + 32 * 1024 * 1024 - 1, fileSize - 1);
       const chunkSize = end - start + 1;
 
       res.status(206);

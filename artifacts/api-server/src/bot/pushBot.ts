@@ -31,29 +31,53 @@ async function forwardToLogChannel(
   if (!pushBot) return null;
   
   try {
-    logger.debug({ LOG_CHANNEL_ID, fromChatId, fromMessageId }, "Attempting to forward message to log channel");
+    // Ensure channel ID is properly formatted
+    const channelId = String(LOG_CHANNEL_ID).trim();
+    
+    logger.info({ 
+      channelId,
+      channelIdType: typeof LOG_CHANNEL_ID,
+      fromChatId, 
+      fromMessageId,
+      fromChatIdType: typeof fromChatId,
+      fromMessageIdType: typeof fromMessageId
+    }, "Attempting forwardMessage to log channel");
     
     const forwarded = await pushBot.telegram.forwardMessage(
-      LOG_CHANNEL_ID,
+      channelId,
       fromChatId,
       fromMessageId,
     );
     
-    logger.info({ logChatId: forwarded.chat.id, logMessageId: forwarded.message_id, LOG_CHANNEL_ID }, "✅ Successfully forwarded to log channel");
+    logger.info({ 
+      logChatId: forwarded.chat.id, 
+      logMessageId: forwarded.message_id, 
+      channelId
+    }, "✅ Successfully forwarded to log channel");
+    
     return { logChatId: forwarded.chat.id, logMessageId: forwarded.message_id };
   } catch (err: any) {
-    const errorCode = err?.error_code || err?.response?.error_code || err?.code || "UNKNOWN";
-    const errorDesc = err?.description || err?.message || String(err);
-    const errorResponse = err?.response ? JSON.stringify(err.response) : "no response";
+    // Extract all possible error fields
+    const errorCode = err?.error_code ?? err?.response?.error_code ?? err?.statusCode ?? err?.code ?? "UNKNOWN";
+    const errorDesc = err?.description ?? err?.message ?? String(err);
+    const errFull = {
+      message: err?.message,
+      description: err?.description,
+      error_code: err?.error_code,
+      code: err?.code,
+      statusCode: err?.statusCode,
+      response: err?.response,
+      stack: err?.stack?.split('\n')[0]
+    };
     
     logger.error({ 
       errorCode, 
       errorDesc,
-      errorResponse,
+      errFull,
       LOG_CHANNEL_ID, 
       fromChatId, 
       messageId: fromMessageId 
-    }, "❌ Push bot failed to forward to log channel");
+    }, "❌ forwardMessage failed to log channel");
     
     return null;
   }
@@ -414,26 +438,40 @@ export function startPushBot(): void {
       // Test log channel access if configured
       if (LOG_CHANNEL_ID) {
         try {
-          const chatInfo = await pushBot!.telegram.getChat(LOG_CHANNEL_ID);
+          const channelIdStr = String(LOG_CHANNEL_ID).trim();
+          logger.info({ channelIdStr }, "Testing channel access with getChat...");
+          
+          const chatInfo = await pushBot!.telegram.getChat(channelIdStr);
           logger.info({ 
             LOG_CHANNEL_ID,
             chatType: chatInfo.type,
-            chatTitle: (chatInfo as any).title || chatInfo.username || "unknown"
-          }, "✅ Push bot can access log channel");
+            chatTitle: (chatInfo as any).title || chatInfo.username || "unknown",
+            chatId: chatInfo.id
+          }, "✅ Push bot CAN access log channel (getChat succeeded)");
         } catch (testErr: any) {
-          const errorCode = testErr?.error_code || testErr?.response?.error_code || "UNKNOWN";
-          const errorDesc = testErr?.description || testErr?.message || String(testErr);
+          const errorCode = testErr?.error_code ?? testErr?.response?.error_code ?? testErr?.code ?? "UNKNOWN";
+          const errorDesc = testErr?.description ?? testErr?.message ?? String(testErr);
+          const errFull = {
+            message: testErr?.message,
+            description: testErr?.description,
+            error_code: testErr?.error_code,
+            code: testErr?.code,
+            response: testErr?.response
+          };
+          
           logger.error({ 
             LOG_CHANNEL_ID, 
+            channelIdStr: LOG_CHANNEL_ID,
             errorCode, 
-            errorDesc 
-          }, "❌ Push bot CANNOT access log channel — check LOG_CHANNEL_ID and bot permissions");
+            errorDesc,
+            errFull
+          }, "❌ Push bot CANNOT access log channel with getChat — check LOG_CHANNEL_ID format and bot permissions");
         }
       } else {
         logger.warn("LOG_CHANNEL_ID not configured — file streaming will be limited to downloads only");
       }
     })
-    .catch((err) => logger.error({ err: err?.message }, "Push bot getMe failed — token invalid?"));
+    .catch((err) => logger.error({ err: err?.message, stack: err?.stack }, "Push bot getMe failed — token invalid?"));
 
   pushBot.launch({ dropPendingUpdates: true })
     .catch((err) => logger.error({ err: err?.message || err }, "Push bot crashed"));

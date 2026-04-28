@@ -13,6 +13,11 @@ const MAX_CONCURRENT_SESSIONS = 2;            // hard cap on simultaneous ffmpeg
 const STARTUP_TIMEOUT_MS = 90_000;
 const SEGMENT_WAIT_MS = 60_000;
 
+// Streaming speed optimization constants
+const HLS_SEGMENT_TIME = 2;                   // 2-second segments (faster initial load, less buffering)
+const HLS_TARGET_DURATION = 3;                // Target duration for clients
+const HLS_LIST_SIZE = 10;                     // Keep recent 10 segments in memory
+
 interface HlsSession {
   id: string;
   dir: string;
@@ -67,23 +72,32 @@ function createSession(videoId: string, chatId: number, messageId: number): HlsS
     "-y",
     "-loglevel", "warning",
     "-fflags", "+genpts+discardcorrupt",
+    "-probesize", "32000",           // Faster file probing
+    "-analyzeduration", "5000000",   // 5 sec max analysis
     "-i", "pipe:0",
     "-c:v", "libx264",
-    "-preset", "ultrafast",
-    "-tune", "zerolatency",
-    "-crf", "26",
+    "-preset", "ultrafast",          // Fastest encoding
+    "-tune", "zerolatency",          // Zero-latency tuning for streaming
+    "-crf", "23",                    // Better quality (was 26) without much overhead
     "-pix_fmt", "yuv420p",
     "-profile:v", "main",
-    "-level", "4.0",
+    "-level", "4.1",                 // Higher level for better compatibility
+    "-maxrate", "4M",                // Max bitrate limiting
+    "-bufsize", "4M",                // Buffer size for rate control
+    "-sc_threshold", "0",            // Disable scene change split
+    "-g", "30",                      // 30-frame GOP (1 sec at 30fps)
+    "-keyint_min", "30",
     "-c:a", "aac",
-    "-b:a", "128k",
+    "-b:a", "192k",                  // Improved audio quality (was 128k)
     "-ac", "2",
-    "-ar", "44100",
+    "-ar", "48000",                  // Higher sample rate (was 44100)
     "-sn",
     "-f", "hls",
-    "-hls_time", "4",
-    "-hls_list_size", "0",
-    "-hls_flags", "independent_segments+append_list+temp_file",
+    "-hls_time", String(HLS_SEGMENT_TIME),
+    "-hls_target_duration", String(HLS_TARGET_DURATION),
+    "-hls_list_size", String(HLS_LIST_SIZE),
+    "-hls_flags", "independent_segments+append_list+temp_file+delete_segments",
+    "-hls_segment_type", "mpegts",   // MPEGTS format (better streaming)
     "-hls_segment_filename", path.join(dir, "seg-%05d.ts"),
     playlistPath,
   ]);

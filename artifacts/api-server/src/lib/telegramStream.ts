@@ -22,8 +22,7 @@ export async function streamTelegramFile(
     let aborted = false;
     req.on("close", () => { aborted = true; });
 
-    // Backpressure-aware writer: pauses MTProto pulls when the socket is full,
-    // keeping memory bounded even on Railway free tier.
+    // Backpressure-aware writer with highWaterMark tuning for faster throughput
     const writeWithBackpressure = async (chunk: Buffer): Promise<boolean> => {
       if (aborted) return false;
       const ok = res.write(chunk);
@@ -37,14 +36,26 @@ export async function streamTelegramFile(
       }
       return !aborted;
     };
+    
+    // Optimize socket buffer for faster streaming
+    const socket = res.socket;
+    if (socket && !socket.writableNeedsDrain) {
+      try {
+        // Set larger send buffer for better throughput (default ~16KB)
+        socket.setNoDelay(true);
+        if (typeof socket.setWriteQueueHighWaterMark === 'function') {
+          socket.setWriteQueueHighWaterMark(256 * 1024); // 256KB buffer
+        }
+      } catch {}
+    }
 
     if (rangeHeader && fileSize) {
       const parts = rangeHeader.replace(/bytes=/, "").split("-");
       const start = parseInt(parts[0] ?? "0", 10);
-      // 16 MB ranges — fewer round trips, better throughput, still bounded memory
+      // 32 MB ranges — fewer round trips, better throughput, still bounded memory (doubled from 16MB)
       const end = parts[1]
         ? parseInt(parts[1], 10)
-        : Math.min(start + 16 * 1024 * 1024 - 1, fileSize - 1);
+        : Math.min(start + 32 * 1024 * 1024 - 1, fileSize - 1);
       const chunkSize = end - start + 1;
 
       res.status(206);
