@@ -33,7 +33,8 @@ async function streamDirect(
   let bytesWritten = 0;
   let lastChunkTime = Date.now();
   const startTime = Date.now();
-  const STALL_TIMEOUT = 30 * 1000; // 30 seconds without data
+  const isRangeRequest = !!req.headers["range"];
+  const STALL_TIMEOUT = isRangeRequest ? 60 * 1000 : 30 * 1000; // 60s for range, 30s for full
   
   const onAbort = () => { 
     aborted = true;
@@ -148,10 +149,10 @@ async function streamDirect(
       try {
         socket.setNoDelay(true);
         if (typeof socket.setWriteQueueHighWaterMark === 'function') {
-          socket.setWriteQueueHighWaterMark(4 * 1024 * 1024); // 4MB buffer for massive throughput
+          socket.setWriteQueueHighWaterMark(2 * 1024 * 1024); // 2MB high water mark (manageable backpressure)
         }
         if (typeof socket.setWriteQueueSize === 'function') {
-          socket.setWriteQueueSize(8 * 1024 * 1024); // 8MB send queue for fast downloads
+          socket.setWriteQueueSize(3 * 1024 * 1024); // 3MB max send queue (prevents buffer overflow)
         }
       } catch {}
     }
@@ -159,10 +160,11 @@ async function streamDirect(
     if (rangeHeader) {
       const parts = rangeHeader.replace(/bytes=/, "").split("-");
       const start = parseInt(parts[0] ?? "0", 10);
-      // 32 MB ranges for video streaming (doubled from 16MB) = even fewer round trips, faster seek
+      // Limit range requests to 64MB chunks for stability (browsers usually request 1-32MB)
+      // This prevents overwhelming the send queue and keeps backpressure manageable
       const end = parts[1]
         ? parseInt(parts[1], 10)
-        : Math.min(start + 256 * 1024 * 1024 - 1, fileSize - 1);
+        : Math.min(start + 64 * 1024 * 1024 - 1, fileSize - 1);
       const chunkSize = end - start + 1;
 
       res.status(206);

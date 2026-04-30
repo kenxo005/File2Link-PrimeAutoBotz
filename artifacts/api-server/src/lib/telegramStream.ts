@@ -16,7 +16,8 @@ export async function streamTelegramFile(
   let bytesWritten = 0;
   let lastChunkTime = Date.now();
   const startTime = Date.now();
-  const STALL_TIMEOUT = 30 * 1000; // 30 seconds without data
+  const isRangeRequest = !!rangeHeader;
+  const STALL_TIMEOUT = isRangeRequest ? 60 * 1000 : 30 * 1000; // 60s for range, 30s for full
   
   try {
     const contentType = mimeType || "application/octet-stream";
@@ -130,14 +131,14 @@ export async function streamTelegramFile(
     const socket = res.socket;
     if (socket && !socket.writableNeedsDrain) {
       try {
-        // Set larger send buffer for better throughput (up to 4MB for maximum speeds)
+        // Set optimized send buffer (2-3MB sweet spot for stability and speed)
         socket.setNoDelay(true);
         if (typeof socket.setWriteQueueHighWaterMark === 'function') {
-          socket.setWriteQueueHighWaterMark(4 * 1024 * 1024); // 4MB buffer for massive throughput
+          socket.setWriteQueueHighWaterMark(2 * 1024 * 1024); // 2MB high water mark (manageable backpressure)
         }
         // Also increase TCP send buffer if possible
         if (typeof socket.setWriteQueueSize === 'function') {
-          socket.setWriteQueueSize(8 * 1024 * 1024); // 8MB send queue for fast downloads
+          socket.setWriteQueueSize(3 * 1024 * 1024); // 3MB max send queue (prevents buffer overflow)
         }
       } catch {}
     }
@@ -145,10 +146,11 @@ export async function streamTelegramFile(
     if (rangeHeader && fileSize) {
       const parts = rangeHeader.replace(/bytes=/, "").split("-");
       const start = parseInt(parts[0] ?? "0", 10);
-      // 32 MB ranges — fewer round trips, better throughput, still bounded memory (doubled from 16MB)
+      // Limit range requests to 64MB chunks for stability (browsers usually request 1-32MB)
+      // This prevents overwhelming the send queue and keeps backpressure manageable
       const end = parts[1]
         ? parseInt(parts[1], 10)
-        : Math.min(start + 256 * 1024 * 1024 - 1, fileSize - 1);
+        : Math.min(start + 64 * 1024 * 1024 - 1, fileSize - 1);
       const chunkSize = end - start + 1;
 
       res.status(206);
