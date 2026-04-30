@@ -31,7 +31,9 @@ async function streamDirect(
 ): Promise<void> {
   let aborted = false;
   let bytesWritten = 0;
+  let lastChunkTime = Date.now();
   const startTime = Date.now();
+  const STALL_TIMEOUT = 30 * 1000; // 30 seconds without data
   
   const onAbort = () => { 
     aborted = true;
@@ -45,8 +47,40 @@ async function streamDirect(
     }, "streamDirect: client disconnected/aborted");
   };
   
+  const onSocketError = (err: Error) => {
+    aborted = true;
+    logger.error({ 
+      err, 
+      chatId, 
+      messageId,
+      bytesWritten,
+      duration: Date.now() - startTime
+    }, "streamDirect: socket error");
+  };
+  
   req.on("close", onAbort);
   req.on("error", onAbort);
+  res.socket?.on("error", onSocketError);
+
+  // Timeout detection for stalled streams
+  const stallDetector = setInterval(() => {
+    const timeSinceLastChunk = Date.now() - lastChunkTime;
+    if (timeSinceLastChunk > STALL_TIMEOUT && !aborted && bytesWritten > 0) {
+      aborted = true;
+      logger.warn({
+        chatId,
+        messageId,
+        bytesWritten,
+        stallDuration: timeSinceLastChunk,
+        duration: Date.now() - startTime
+      }, "streamDirect: stream stalled, aborting");
+      try {
+        if (!res.writableEnded) {
+          res.destroy();
+        }
+      } catch {}
+    }
+  }, 5 * 1000); // Check every 5 seconds
 
   try {
     const contentType = mimeType || "video/mp4";
@@ -60,17 +94,52 @@ async function streamDirect(
 
     const writeBP = async (chunk: Buffer): Promise<boolean> => {
       if (aborted) return false;
-      bytesWritten += chunk.length;
-      const ok = res.write(chunk);
-      if (!ok) {
-        await new Promise<void>((resolve) => {
-          const onDrain = () => { res.off("close", onClose); resolve(); };
-          const onClose = () => { res.off("drain", onDrain); aborted = true; resolve(); };
-          res.once("drain", onDrain);
-          res.once("close", onClose);
-        });
+      
+      try {
+        lastChunkTime = Date.now();
+        bytesWritten += chunk.length;
+        const ok = res.write(chunk);
+        
+        if (!ok) {
+          // Backpressure: wait for drain or abort
+          await new Promise<void>((resolve) => {
+            let resolved = false;
+            const onDrain = () => {
+              if (resolved) return;
+              resolved = true;
+              res.off("close", onClose);
+              res.off("error", onError);
+              resolve();
+            };
+            const onClose = () => {
+              if (resolved) return;
+              resolved = true;
+              res.off("drain", onDrain);
+              res.off("error", onError);
+              aborted = true;
+              resolve();
+            };
+            const onError = (err: Error) => {
+              if (resolved) return;
+              resolved = true;
+              res.off("drain", onDrain);
+              res.off("close", onClose);
+              logger.error({ err }, "streamDirect: backpressure error");
+              aborted = true;
+              resolve();
+            };
+            
+            res.once("drain", onDrain);
+            res.once("close", onClose);
+            res.once("error", onError);
+          });
+        }
+        return !aborted;
+      } catch (err) {
+        logger.error({ err }, "streamDirect: write error");
+        aborted = true;
+        return false;
       }
-      return !aborted;
     };
     
     // Optimize socket for streaming
@@ -79,7 +148,10 @@ async function streamDirect(
       try {
         socket.setNoDelay(true);
         if (typeof socket.setWriteQueueHighWaterMark === 'function') {
-          socket.setWriteQueueHighWaterMark(256 * 1024); // 256KB buffer
+          socket.setWriteQueueHighWaterMark(1024 * 1024); // 1MB buffer for 1GB/s speeds
+        }
+        if (typeof socket.setWriteQueueSize === 'function') {
+          socket.setWriteQueueSize(2 * 1024 * 1024); // 2MB send queue
         }
       } catch {}
     }
@@ -90,7 +162,7 @@ async function streamDirect(
       // 32 MB ranges for video streaming (doubled from 16MB) = even fewer round trips, faster seek
       const end = parts[1]
         ? parseInt(parts[1], 10)
-        : Math.min(start + 32 * 1024 * 1024 - 1, fileSize - 1);
+        : Math.min(start + 256 * 1024 * 1024 - 1, fileSize - 1);
       const chunkSize = end - start + 1;
 
       res.status(206);
@@ -108,9 +180,14 @@ async function streamDirect(
         chunkSize
       }, "streamDirect: 206 range request");
 
-      await streamFileByMessage(chatId, messageId, writeBP, start, chunkSize);
-
-      if (!aborted) res.end();
+      try {
+        await streamFileByMessage(chatId, messageId, writeBP, start, chunkSize);
+        if (!aborted) res.end();
+      } catch (streamErr) {
+        logger.error({ err: streamErr, chatId, messageId }, "streamDirect: range request failed");
+        if (!res.headersSent) res.status(500).send("Stream interrupted");
+        else if (!res.writableEnded) res.destroy();
+      }
     } else {
       res.status(200);
       res.setHeader("Accept-Ranges", "bytes");
@@ -124,9 +201,14 @@ async function streamDirect(
         fileSize
       }, "streamDirect: full file stream (200)");
 
-      await streamFileByMessage(chatId, messageId, writeBP);
-
-      if (!aborted) res.end();
+      try {
+        await streamFileByMessage(chatId, messageId, writeBP);
+        if (!aborted) res.end();
+      } catch (streamErr) {
+        logger.error({ err: streamErr, chatId, messageId }, "streamDirect: full stream failed");
+        if (!res.headersSent) res.status(500).send("Stream interrupted");
+        else if (!res.writableEnded) res.destroy();
+      }
     }
   } catch (err) {
     logger.error({ 
@@ -138,8 +220,17 @@ async function streamDirect(
       duration: Date.now() - startTime
     }, "streamDirect error");
     if (!res.headersSent) res.status(500).send("Streaming error");
+    else if (!res.writableEnded) {
+      try {
+        res.destroy();
+      } catch {}
+    }
   } finally {
+    clearInterval(stallDetector);
     req.off("close", onAbort);
     req.off("error", onAbort);
+    if (res.socket) {
+      res.socket.off("error", onSocketError);
+    }
   }
 }
