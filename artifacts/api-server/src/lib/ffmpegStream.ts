@@ -148,10 +148,10 @@ async function streamDirect(
       try {
         socket.setNoDelay(true);
         if (typeof socket.setWriteQueueHighWaterMark === 'function') {
-          socket.setWriteQueueHighWaterMark(1024 * 1024); // 1MB buffer for 1GB/s speeds
+          socket.setWriteQueueHighWaterMark(4 * 1024 * 1024); // 4MB buffer for massive throughput
         }
         if (typeof socket.setWriteQueueSize === 'function') {
-          socket.setWriteQueueSize(2 * 1024 * 1024); // 2MB send queue
+          socket.setWriteQueueSize(8 * 1024 * 1024); // 8MB send queue for fast downloads
         }
       } catch {}
     }

@@ -234,169 +234,47 @@ router.get("/stream-page/:id", async (req, res) => {
 
       let mediaPlayer = "";
       if (isVideo) {
-        // Detect codecs that need HLS transcoding
-        const needsTranscodingCheck = (mime: string) => {
-          const problematicCodecs = ["vp8", "vp9", "av1", "hevc", "h.265", "opus", "theora", "webm"];
-          return problematicCodecs.some(codec => mime.toLowerCase().includes(codec));
-        };
-        
-        const forceHls = needsTranscodingCheck(videoMime);
-      
       mediaPlayer = `
-        <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
-          <button onclick="switchToStream()" id="direct-btn" style="padding:8px 16px;background:#22c55e;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:500;">Direct Stream</button>
-          <button onclick="switchToHls()" id="hls-btn" style="padding:8px 16px;background:#6b7280;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:500;">HLS Transcode</button>
-          <button onclick="downloadFile()" style="padding:8px 16px;background:#3b82f6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:500;">📥 Download</button>
-        </div>
         <div class="media-container">
           <video id="player" controls playsinline preload="auto" style="width:100%;display:block;border-radius:20px;background:#000;box-shadow:0 4px 6px rgba(0,0,0,0.3);"></video>
         </div>
-        <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"><\/script>
         <script>
           (function () {
             var video = document.getElementById('player');
             var directUrl = ${JSON.stringify(videoStreamUrl)};
             var directType = ${JSON.stringify(videoMime)};
-            var hlsUrl = ${JSON.stringify(`/api/hls/${file.id}/index.m3u8`)};
-            var forceHls = ${forceHls ? 'true' : 'false'};
-            var downloadUrl = ${JSON.stringify(downloadUrl)};
-            var currentMode = 'direct';
-            var triedHls = false;
             var playbackStarted = false;
-            var directStreamAborted = false;
             var timeoutHandle = null;
-            var currentHls = null;
 
-            function clearFallbackTimeout() {
-              if (timeoutHandle) clearTimeout(timeoutHandle);
-              timeoutHandle = null;
-            }
-
-            function destroyHls() {
-              if (currentHls) {
-                try { currentHls.destroy(); } catch(e) {}
-                currentHls = null;
+            function clearTimeout() {
+              if (timeoutHandle) {
+                window.clearTimeout(timeoutHandle);
+                timeoutHandle = null;
               }
             }
 
-            function loadHls() {
-              if (triedHls) return;
-              triedHls = true;
-              directStreamAborted = true;
-              clearFallbackTimeout();
-              currentMode = 'hls';
-              
-              console.log('[Video] Loading HLS transcoding');
-              document.getElementById('direct-btn').style.background = '#6b7280';
-              document.getElementById('hls-btn').style.background = '#22c55e';
-              
-              while (video.firstChild) video.removeChild(video.firstChild);
-              video.removeAttribute('src');
-              
-              if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                video.src = hlsUrl;
-                video.load();
-                video.play().catch(function(e){ console.error('[Video] HLS play error:', e); });
-                return;
-              }
-              
-              if (window.Hls && window.Hls.isSupported()) {
-                destroyHls();
-                currentHls = new window.Hls({ 
-                  enableWorker: true, 
-                  lowLatencyMode: false, 
-                  maxBufferLength: 30,
-                  backBufferLength: 90,
-                  maxMaxBufferLength: 60 
-                });
-                currentHls.on(window.Hls.Events.ERROR, function(event, data) {
-                  console.error('[Video] HLS error:', data);
-                  if (data.fatal) {
-                    console.error('[Video] Fatal HLS error, retrying...');
-                    setTimeout(function() { loadHls(); }, 2000);
-                  }
-                });
-                currentHls.loadSource(hlsUrl);
-                currentHls.attachMedia(video);
-                currentHls.on(window.Hls.Events.MANIFEST_PARSED, function () { 
-                  video.play().catch(function(e){ console.error('[Video] HLS play failed:', e); }); 
-                });
-              }
+            function onPlaybackStarted() {
+              playbackStarted = true;
+              clearTimeout();
+              console.log('[Video] Playback started');
             }
 
-            function loadDirect() {
-              directStreamAborted = false;
-              triedHls = false;
-              playbackStarted = false;
-              clearFallbackTimeout();
-              currentMode = 'direct';
-              destroyHls();
-              
-              console.log('[Video] Loading direct stream');
-              document.getElementById('direct-btn').style.background = '#22c55e';
-              document.getElementById('hls-btn').style.background = '#6b7280';
-              
-              while (video.firstChild) video.removeChild(video.firstChild);
-              video.removeAttribute('src');
-              
-              var src = document.createElement('source');
-              src.src = directUrl;
-              src.type = directType;
-              video.appendChild(src);
-              
-              video.addEventListener('play', function onPlay() {
-                playbackStarted = true;
-                clearFallbackTimeout();
-                console.log('[Video] Direct stream playback started');
-                video.removeEventListener('play', onPlay);
-              }, { once: true });
-              
-              video.addEventListener('error', function onError(e) {
-                console.error('[Video] Direct stream error:', e);
-                if (!directStreamAborted) loadHls();
-                video.removeEventListener('error', onError);
-              }, { once: true });
-              
-              src.addEventListener('error', function onSrcError(e) {
-                console.error('[Video] Source element error:', e);
-                if (!directStreamAborted) loadHls();
-                src.removeEventListener('error', onSrcError);
-              }, { once: true });
-              
-              timeoutHandle = setTimeout(function() {
-                if (!playbackStarted && !directStreamAborted) {
-                  console.warn('[Video] Direct stream timeout, falling back to HLS');
-                  loadHls();
-                }
-              }, 8000);
-              
-              video.load();
-            }
-
-            function switchToHls() {
-              if (currentMode !== 'hls') loadHls();
-            }
-
-            function switchToStream() {
-              if (currentMode !== 'direct') loadDirect();
-            }
-
-            function downloadFile() {
-              window.location.href = downloadUrl;
-            }
-
-            window.switchToHls = switchToHls;
-            window.switchToStream = switchToStream;
-            window.downloadFile = downloadFile;
-
-            // If codec detected as problematic, skip direct stream entirely
-            if (forceHls) {
-              console.log('[Video] Codec detected as incompatible, using HLS immediately');
-              loadHls();
-            } else {
-              console.log('[Video] Trying direct stream first, with HLS fallback');
-              loadDirect();
-            }
+            var src = document.createElement('source');
+            src.src = directUrl;
+            src.type = directType;
+            video.appendChild(src);
+            
+            video.addEventListener('play', onPlaybackStarted, { once: true });
+            
+            video.addEventListener('error', function(e) {
+              console.error('[Video] Error:', e);
+            }, { once: false });
+            
+            src.addEventListener('error', function(e) {
+              console.error('[Video] Source error:', e);
+            }, { once: false });
+            
+            video.load();
           })();
         <\/script>`;
     } else if (isAudio) {

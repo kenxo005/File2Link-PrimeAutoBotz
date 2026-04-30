@@ -130,14 +130,14 @@ export async function streamTelegramFile(
     const socket = res.socket;
     if (socket && !socket.writableNeedsDrain) {
       try {
-        // Set larger send buffer for better throughput (up to 1MB for 1GB/s speeds)
+        // Set larger send buffer for better throughput (up to 4MB for maximum speeds)
         socket.setNoDelay(true);
         if (typeof socket.setWriteQueueHighWaterMark === 'function') {
-          socket.setWriteQueueHighWaterMark(1024 * 1024); // 1MB buffer for massive throughput
+          socket.setWriteQueueHighWaterMark(4 * 1024 * 1024); // 4MB buffer for massive throughput
         }
         // Also increase TCP send buffer if possible
         if (typeof socket.setWriteQueueSize === 'function') {
-          socket.setWriteQueueSize(2 * 1024 * 1024); // 2MB send queue
+          socket.setWriteQueueSize(8 * 1024 * 1024); // 8MB send queue for fast downloads
         }
       } catch {}
     }
